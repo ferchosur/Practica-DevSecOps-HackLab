@@ -1,4 +1,4 @@
-title = "gitleaks config (demo)"
+title = "gitleaks config (demo) :P"
 [[rules]]
 id = "aws-access-key"
 description = "AWS Access Key ID"

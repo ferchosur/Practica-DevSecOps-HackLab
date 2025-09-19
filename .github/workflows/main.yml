@@ -17,7 +17,7 @@ concurrency:
 
 env:
   # 🔁 Cambia esto para probar cada escenario (apps/10-secrets-leak, 20-sast-bugs, etc.)
-  APP_DIR: apps/00-safe-baseline
+  APP_DIR: apps/10-secrets-leak
   # Parámetros de despliegue local
   IMAGE_NAME: demo-app
   IMAGE_TAG: local

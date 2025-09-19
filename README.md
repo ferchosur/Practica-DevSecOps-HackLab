@@ -4,6 +4,8 @@ Este repo acompaña el taller práctico: pipeline en GitHub + Kubernetes local (
 
 :P
 
+:P
+
 ## Estructura
 ```
 apps/

@@ -1,9 +1,156 @@
 name: devsecops-pipeline
-on: [push, pull_request]
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  packages: write   # útil si luego publicas en GHCR
+
+concurrency:
+  group: devsecops-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 🔁 Cambia esto para probar cada escenario (apps/10-secrets-leak, 20-sast-bugs, etc.)
+  APP_DIR: apps/00-safe-baseline
+  # Parámetros de despliegue local
+  IMAGE_NAME: demo-app
+  IMAGE_TAG: local
+  KIND_CLUSTER: devsecops
+  SERVICE_RELEASE_NAME: demo
 
 jobs:
+  # ──────────────────────────────────────────────────────────────────────────────
+  # Slide 12 — Secrets + SAST
+  # ──────────────────────────────────────────────────────────────────────────────
   secrets:
+    name: Secrets scanning (Gitleaks)
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: gitleaks/gitleaks-action@v2
+        with: { fetch-depth: 0 }   # para análisis que miran historial
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Si usas un gitleaks.toml propio, añade inputs/vars según la acción
+
+  sast:
+    name: SAST (Semgrep)
+    runs-on: self-hosted
+    needs: [secrets]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep (bloqueante)
+        run: |
+          docker run --rm -v "$PWD:/src" returntocorp/semgrep:latest \
+            semgrep scan --error --config p/ci --config .semgrep
+      - name: Export SARIF (para pestaña Security)
+        run: |
+          docker run --rm -v "$PWD:/src" returntocorp/semgrep:latest \
+            semgrep scan --config p/ci --config .semgrep --sarif -o semgrep.sarif || true
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: semgrep.sarif }
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # Slide 13 — IaC + Build + SBOM
+  # ──────────────────────────────────────────────────────────────────────────────
+  iac:
+    name: IaC scan (Checkov)
+    runs-on: self-hosted
+    needs: [sast]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov (K8s/Terraform)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          quiet: true
+          soft_fail: false     # pon true si no quieres bloquear (no recomendado)
+
+  build:
+    name: Build + SBOM
+    runs-on: self-hosted
+    needs: [iac]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build imagen de la app objetivo
+        run: |
+          cd "${APP_DIR}"
+          docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+      - name: SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${IMAGE_NAME}:${IMAGE_TAG}
+          artifact-name: sbom.spdx.json   # queda como artefacto del job
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # Slide 14 — Trivy + Firma/Verify (cosign)
+  # ──────────────────────────────────────────────────────────────────────────────
+  container_scan:
+    name: Container & deps scan (Trivy)
+    runs-on: self-hosted
+    needs: [build]
+    steps:
+      - name: Trivy image (CRITICAL,HIGH)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${IMAGE_NAME}:${IMAGE_TAG}
+          format: sarif
+          output: trivy-image.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy-image.sarif }
+
+      - name: Trivy fs (SCA sobre el repo)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: trivy-fs.sarif }
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # Slide 15 — Deploy a K8s local + DAST (ZAP)
+  # ──────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy a Kubernetes local (kind/minikube)
+    runs-on: self-hosted
+    needs: [sign]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cargar imagen local al clúster kind
+        run: kind load docker-image ${IMAGE_NAME}:${IMAGE_TAG} --name ${KIND_CLUSTER}
+      - name: Helm upgrade/install
+        run: |
+          helm upgrade --install ${SERVICE_RELEASE_NAME} charts/demo-app \
+            --set image.repository=${IMAGE_NAME} \
+            --set image.tag=${IMAGE_TAG} \
+            --set service.type=NodePort
+      - name: Esperar readiness
+        run: kubectl rollout status deploy/${SERVICE_RELEASE_NAME} --timeout=180s
+
+  dast:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: self-hosted
+    needs: [deploy]
+    steps:
+      - name: Port-forward al Service y ejecutar ZAP
+        run: |
+          kubectl port-forward svc/${SERVICE_RELEASE_NAME} 8080:80 & echo $! > pf.pid
+          sleep 3
+          docker run --rm -t owasp/zap2docker-stable \
+            zap-baseline.py -t http://localhost:8080 -x zap.xml
+          kill $(cat pf.pid) || true
+

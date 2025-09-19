@@ -2,6 +2,10 @@
 
 Este repo acompaña el taller práctico: pipeline en GitHub + Kubernetes local (kind/minikube), demostrando herramientas de seguridad con escenarios **break/fix**.
 
+:P
+
+:P
+
 ## Estructura
 ```
 apps/

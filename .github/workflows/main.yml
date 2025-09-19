@@ -121,13 +121,52 @@ jobs:
       - uses: github/codeql-action/upload-sarif@v3
         with: { sarif_file: trivy-fs.sarif }
 
+  sign:
+    name: Supply chain gate (cosign sobre SBOM)
+    runs-on: self-hosted
+    needs: [container_scan]
+    env:
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar cosign
+        run: |
+          COSIGN_URL="https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+          curl -sSLf "$COSIGN_URL" -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+      - name: Generar claves (si no existen)
+        run: |
+          test -f cosign.key || cosign generate-key-pair
+      - name: Descargar SBOM del job anterior
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom.spdx.json
+          path: .
+      - name: Firmar SBOM (sign-blob)
+        run: cosign sign-blob --yes --key cosign.key sbom.spdx.json <<< "$COSIGN_PASSWORD"
+      - name: Verificar firma del SBOM (gate)
+        run: cosign verify-blob --key cosign.pub --signature sbom.spdx.json.sig sbom.spdx.json
+
+      # ── Alternativa (comentada) si publicas la imagen en GHCR y quieres firmar la imagen:
+      # - name: Login GHCR
+      #   run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      # - name: Push a GHCR
+      #   run: |
+      #     export IMG="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}"
+      #     docker tag ${IMAGE_NAME}:${IMAGE_TAG} "$IMG"
+      #     docker push "$IMG"
+      # - name: Sign imagen en GHCR
+      #   run: cosign sign --yes --key cosign.key "ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}" <<< "$COSIGN_PASSWORD"
+      # - name: Verify imagen (gate)
+      #   run: cosign verify --key cosign.pub "ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}"
+
   # ──────────────────────────────────────────────────────────────────────────────
   # Slide 15 — Deploy a K8s local + DAST (ZAP)
   # ──────────────────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy a Kubernetes local (kind/minikube)
     runs-on: self-hosted
-    #needs: [sign]
+    needs: [sign]
     steps:
       - uses: actions/checkout@v4
       - name: Cargar imagen local al clúster kind

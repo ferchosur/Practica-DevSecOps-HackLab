@@ -21,7 +21,7 @@ env:
   # Parámetros de despliegue local
   IMAGE_NAME: demo-app
   IMAGE_TAG: local
-  KIND_CLUSTER: devsecops
+  KIND_CLUSTER: kind-devsecops
   SERVICE_RELEASE_NAME: demo
 
 jobs:

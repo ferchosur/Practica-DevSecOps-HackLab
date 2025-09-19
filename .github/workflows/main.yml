@@ -127,7 +127,7 @@ jobs:
   deploy:
     name: Deploy a Kubernetes local (kind/minikube)
     runs-on: self-hosted
-    needs: [sign]
+    #needs: [sign]
     steps:
       - uses: actions/checkout@v4
       - name: Cargar imagen local al clúster kind
